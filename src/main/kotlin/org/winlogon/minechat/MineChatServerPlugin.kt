@@ -9,7 +9,7 @@ import dev.jorel.commandapi.executors.PlayerCommandExecutor
 import org.bukkit.Bukkit
 import org.bukkit.event.EventHandler
 import org.bukkit.event.Listener
-import org.bukkit.event.player.AsyncPlayerChatEvent
+import io.papermc.paper.event.player.AsyncChatEvent
 import org.bukkit.plugin.java.JavaPlugin
 import java.io.File
 import java.io.InputStreamReader
@@ -49,12 +49,12 @@ class MineChatPlugin : JavaPlugin() {
 
         server.pluginManager.registerEvents(object : Listener {
             @EventHandler
-            fun onChat(event: AsyncPlayerChatEvent) {
+            fun onChat(event: AsyncChatEvent) {
                 val message = mapOf(
                     "type" to "BROADCAST",
                     "payload" to mapOf(
                         "from" to event.player.name,
-                        "message" to event.message
+                        "message" to event.message()
                     )
                 )
                 broadcastToClients(Gson().toJson(message))
@@ -190,7 +190,7 @@ class ClientStorage {
 }
 
 class ClientConnection(
-    private val socket: ServerSocket,
+    private val socket: java.net.Socket,
     private val plugin: MineChatPlugin
 ) : Thread() {
     private val reader = socket.getInputStream().bufferedReader()
