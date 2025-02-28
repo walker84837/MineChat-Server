@@ -34,12 +34,13 @@ class MineChatPlugin : JavaPlugin() {
         CommandAPICommand("link")
             .executesPlayer(PlayerCommandExecutor { player, _ ->
                 val code = generateLinkCode()
+		val fiveMinutesInMs = 300_000
                 linkCodeStorage.add(
                     LinkCode(
                         code = code,
                         minecraftUuid = player.uniqueId,
                         minecraftUsername = player.name,
-                        expiresAt = System.currentTimeMillis() + 300_000
+                        expiresAt = System.currentTimeMillis() + fiveMinutesInMs
                     )
                 )
                 player.sendMessage("§aYour link code is: §6$code§a. Use it in the client within 5 minutes.")

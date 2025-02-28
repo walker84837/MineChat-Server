@@ -1,0 +1,13 @@
+name: ${NAME}
+version: ${VERSION}
+main: ${PACKAGE}.MineChatServerPlugin
+description: MineChat Server
+author: winlogon
+website: https://github.com/walker84837/MineChat-Server
+api-version: '1.21'
+dependencies:
+  server:
+  CommandAPI:
+    load: BEFORE
+    required: true
+    join-classpath: true
