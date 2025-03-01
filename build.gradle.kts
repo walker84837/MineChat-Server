@@ -61,6 +61,7 @@ repositories {
 
 dependencies {
     compileOnly("io.papermc.paper:paper-api:1.21.4-R0.1-SNAPSHOT")
+    compileOnly("net.kyori:adventure-text-serializer-plain:4.19.0")
     compileOnly("dev.jorel:commandapi-bukkit-core:9.7.0")
     
     testRuntimeOnly("org.junit.platform:junit-platform-launcher:1.11.4")

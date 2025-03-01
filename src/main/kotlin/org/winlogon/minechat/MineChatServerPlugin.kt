@@ -11,6 +11,7 @@ import org.bukkit.event.EventHandler
 import org.bukkit.event.Listener
 import io.papermc.paper.event.player.AsyncChatEvent
 import org.bukkit.plugin.java.JavaPlugin
+import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer
 import java.io.File
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
@@ -19,12 +20,14 @@ import java.util.*
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.concurrent.schedule
 
-class MineChatPlugin : JavaPlugin() {
+class MineChatServerPlugin : JavaPlugin() {
     private var serverSocket: ServerSocket? = null
     private val connectedClients = CopyOnWriteArrayList<ClientConnection>()
     private val linkCodeStorage = LinkCodeStorage()
     private val clientStorage = ClientStorage()
     private val port = 25575
+    private var serverThread: Thread? = null
+    @Volatile private var isServerRunning = false
 
     override fun onEnable() {
         saveDefaultConfig()
@@ -47,20 +50,6 @@ class MineChatPlugin : JavaPlugin() {
             })
             .register()
 
-        server.pluginManager.registerEvents(object : Listener {
-            @EventHandler
-            fun onChat(event: AsyncChatEvent) {
-                val message = mapOf(
-                    "type" to "BROADCAST",
-                    "payload" to mapOf(
-                        "from" to event.player.name,
-                        "message" to event.message()
-                    )
-                )
-                broadcastToClients(Gson().toJson(message))
-            }
-        }, this)
-
         serverSocket = ServerSocket(port)
         logger.info("Starting MineChat server on port $port")
 
@@ -68,26 +57,58 @@ class MineChatPlugin : JavaPlugin() {
             linkCodeStorage.cleanupExpired()
         }
 
-        Thread {
-            while (true) {
+        isServerRunning = true
+
+        serverThread = Thread {
+            while (isServerRunning) {
                 try {
-                    val socket = serverSocket?.accept() ?: break
-                    logger.info("Client connected: ${socket.inetAddress}")
-                    val connection = ClientConnection(socket, this@MineChatPlugin)
-                    connectedClients.add(connection)
-                    connection.start()
+                    val socket = serverSocket?.accept()
+                    if (socket != null) {
+                        logger.info("Client connected: ${socket.inetAddress}")
+                        val connection = ClientConnection(socket, this@MineChatServerPlugin)
+                        connectedClients.add(connection)
+                        connection.start()
+                    }
                 } catch (e: Exception) {
+                    if (!isServerRunning) {
+                        break
+                    }
                     logger.warning("Error accepting client: ${e.message}")
                 }
             }
-        }.start()
+            logger.info("MineChat server socket thread stopped.")
+        }
+
+        serverThread?.start()
+
+        server.pluginManager.registerEvents(object : Listener {
+            @EventHandler
+            fun onChat(event: AsyncChatEvent) {
+                val plainMsg = PlainTextComponentSerializer.plainText().serialize(event.message())
+                val message = mapOf(
+                    "type" to "BROADCAST",
+                    "payload" to mapOf(
+                        "from" to event.player.name,
+                        "message" to plainMsg
+                    )
+                )
+                broadcastToClients(Gson().toJson(message))
+            }
+        }, this)
     }
 
     override fun onDisable() {
+        isServerRunning = false
+        serverThread?.interrupt()
         serverSocket?.close()
         connectedClients.forEach { it.close() }
         linkCodeStorage.save()
         clientStorage.save()
+        try {
+            serverThread?.join()
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
     }
 
     private fun generateLinkCode(): String {
@@ -191,7 +212,7 @@ class ClientStorage {
 
 class ClientConnection(
     private val socket: java.net.Socket,
-    private val plugin: MineChatPlugin
+    private val plugin: MineChatServerPlugin
 ) : Thread() {
     private val reader = socket.getInputStream().bufferedReader()
     private val writer = socket.getOutputStream().bufferedWriter()
