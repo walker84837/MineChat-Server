@@ -1,6 +1,6 @@
 # MineChat Server
 
-[![CI status](https://github.com/walker84837/MineChat-Server/actions/workflows/build.yml/badge.svg)](https://github.com/walker84837/MineChat-Server/actions/workflows/build.yml)
+[![Ci status](https://github.com/walker84837/MineChat-Server/actions/workflows/build.yml/badge.svg)](https://github.com/walker84837/MineChat-Server/actions/workflows/build.yml)
 
 This plugin implements the server-side component of the MineChat platform. It lets you chat on a Minecraft server without having to log in to a Minecraft account.
 
