@@ -46,7 +46,7 @@ class MineChatServerPlugin : JavaPlugin() {
                         expiresAt = System.currentTimeMillis() + fiveMinutesInMs
                     )
                 )
-                player.sendMessage("§aYour link code is: §6$code§a. Use it in the client within 5 minutes.")
+                player.sendMessage("§7Your link code is: §3$code§7. Use it in the client within §25 minutes.")
             })
             .register()
 
@@ -234,7 +234,7 @@ class ClientConnection(
             plugin.logger.warning("Client error: ${e.message}")
         } finally {
             client?.let {
-                plugin.broadcastMinecraft("§7[MineChat] §e${it.minecraftUsername} has left the chat.")
+                plugin.broadcastMinecraft("§8[§3MineChat§8] §a${it.minecraftUsername} has left the chat.")
                 plugin.broadcastToClients(
                     Gson().toJson(
                         mapOf(
@@ -277,7 +277,7 @@ class ClientConnection(
                         )
                     )
                 )
-                plugin.broadcastMinecraft("§7[MineChat] §e${link.minecraftUsername} has joined the chat.")
+                plugin.broadcastMinecraft("§8[§3MineChat§8] §a${link.minecraftUsername} has successfully authenticated.")
                 plugin.broadcastToClients(
                     Gson().toJson(
                         mapOf(
@@ -320,7 +320,7 @@ class ClientConnection(
                         )
                     )
                 )
-                plugin.broadcastMinecraft("§7[MineChat] §e${client.minecraftUsername} has joined the chat.")
+                plugin.broadcastMinecraft("§8[§3MineChat§8] §a${client.minecraftUsername} has joined the chat.")
                 plugin.broadcastToClients(
                     Gson().toJson(
                         mapOf(
@@ -352,7 +352,7 @@ class ClientConnection(
     private fun handleChat(payload: JsonObject) {
         client?.let {
             val message = payload.get("message").asString
-            plugin.broadcastMinecraft("§7[MineChat] §f${it.minecraftUsername}: §7$message")
+            plugin.broadcastMinecraft("§8[§3MineChat§8] §2${it.minecraftUsername}§8: §7$message")
             plugin.broadcastToClients(
                 Gson().toJson(
                     mapOf(
