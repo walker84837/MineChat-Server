@@ -4,40 +4,55 @@ import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.google.gson.reflect.TypeToken
 import dev.jorel.commandapi.CommandAPICommand
-import dev.jorel.commandapi.CommandAPIConfig
 import dev.jorel.commandapi.executors.PlayerCommandExecutor
 import org.bukkit.Bukkit
 import org.bukkit.event.EventHandler
 import org.bukkit.event.Listener
 import io.papermc.paper.event.player.AsyncChatEvent
 import org.bukkit.plugin.java.JavaPlugin
+import net.kyori.adventure.text.Component
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer
+import net.kyori.adventure.text.minimessage.MiniMessage
 import java.io.File
-import java.io.InputStreamReader
-import java.io.OutputStreamWriter
 import java.net.ServerSocket
 import java.util.*
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.concurrent.schedule
 
 class MineChatServerPlugin : JavaPlugin() {
+
+    companion object {
+        // The raw legacy string prefix is stored as a constant.
+        const val MINECHAT_PREFIX_STRING = "&8[&3MineChat&8]"
+        // And we pre-convert it into a Component.
+        val MINECHAT_PREFIX_COMPONENT: Component = LegacyComponentSerializer.legacyAmpersand().deserialize(MINECHAT_PREFIX_STRING)
+    }
+
     private var serverSocket: ServerSocket? = null
     private val connectedClients = CopyOnWriteArrayList<ClientConnection>()
-    private val linkCodeStorage = LinkCodeStorage()
-    private val clientStorage = ClientStorage()
+    private lateinit var linkCodeStorage: LinkCodeStorage
+    private lateinit var clientStorage: ClientStorage
     private val port = 25575
     private var serverThread: Thread? = null
     @Volatile private var isServerRunning = false
 
     override fun onEnable() {
         saveDefaultConfig()
+        // Ensure the plugin's data folder exists.
+        if (!dataFolder.exists()) {
+            dataFolder.mkdirs()
+        }
+        // Initialize storage using the built–in data folder.
+        linkCodeStorage = LinkCodeStorage(dataFolder)
+        clientStorage = ClientStorage(dataFolder)
         linkCodeStorage.load()
         clientStorage.load()
 
         CommandAPICommand("link")
             .executesPlayer(PlayerCommandExecutor { player, _ ->
                 val code = generateLinkCode()
-		val fiveMinutesInMs = 300_000
+                val fiveMinutesInMs = 300_000
                 linkCodeStorage.add(
                     LinkCode(
                         code = code,
@@ -46,7 +61,8 @@ class MineChatServerPlugin : JavaPlugin() {
                         expiresAt = System.currentTimeMillis() + fiveMinutesInMs
                     )
                 )
-                player.sendMessage("§7Your link code is: §3$code§7. Use it in the client within §25 minutes.")
+                // Use our helper to format the message (which uses MiniMessage if detected or legacy otherwise)
+                player.sendMessage(formatMessage("&7Your link code is: &3$code&7. Use it in the client within &25 minutes."))
             })
             .register()
 
@@ -78,7 +94,6 @@ class MineChatServerPlugin : JavaPlugin() {
             }
             logger.info("MineChat server socket thread stopped.")
         }
-
         serverThread?.start()
 
         server.pluginManager.registerEvents(object : Listener {
@@ -127,13 +142,36 @@ class MineChatServerPlugin : JavaPlugin() {
         }
     }
 
-    fun broadcastMinecraft(message: String) {
-        Bukkit.getOnlinePlayers().forEach { it.sendMessage(message) }
+    // Instead of sending a raw string, we now accept a Component.
+    fun broadcastMinecraft(component: Component) {
+        Bukkit.getOnlinePlayers().forEach { it.sendMessage(component) }
     }
 
     fun getLinkCodeStorage(): LinkCodeStorage = linkCodeStorage
     fun getClientStorage(): ClientStorage = clientStorage
     fun removeClient(client: ClientConnection) = connectedClients.remove(client)
+
+    /**
+     * Format a message using Adventure.
+     * If the string contains MiniMessage tags (<...>) then MiniMessage is used;
+     * otherwise the legacy ampersand formatter is applied.
+     */
+    fun formatMessage(message: String): Component {
+        return if (message.contains('<') && message.contains('>')) {
+            MiniMessage.miniMessage().deserialize(message)
+        } else {
+            LegacyComponentSerializer.legacyAmpersand().deserialize(message)
+        }
+    }
+
+    /**
+     * Helper to prepend the MineChat prefix to a message.
+     */
+    fun formatPrefixed(message: String): Component {
+        return MINECHAT_PREFIX_COMPONENT
+            .append(Component.space())
+            .append(formatMessage(message))
+    }
 }
 
 data class LinkCode(
@@ -149,9 +187,13 @@ data class Client(
     val minecraftUsername: String
 )
 
-class LinkCodeStorage {
+/**
+ * Uses the plugin’s data folder to store the link_codes.json file.
+ * If the file does not exist, it is created with an empty JSON array.
+ */
+class LinkCodeStorage(private val dataFolder: File) {
     private val linkCodes = mutableListOf<LinkCode>()
-    private val file = File("plugins/MineChat/link_codes.json")
+    private val file = File(dataFolder, "link_codes.json")
 
     fun add(code: LinkCode) {
         linkCodes.add(code)
@@ -174,10 +216,16 @@ class LinkCodeStorage {
     }
 
     fun load() {
-        if (!file.exists()) return
+        if (!file.exists()) {
+            file.parentFile.mkdirs()
+            file.writeText("[]")
+            return
+        }
         val json = file.readText()
-        val type = object : TypeToken<List<LinkCode>>() {}.type
-        linkCodes.addAll(Gson().fromJson(json, type))
+        if (json.isNotBlank()) {
+            val type = object : TypeToken<List<LinkCode>>() {}.type
+            linkCodes.addAll(Gson().fromJson(json, type))
+        }
     }
 
     fun save() {
@@ -185,9 +233,13 @@ class LinkCodeStorage {
     }
 }
 
-class ClientStorage {
+/**
+ * Uses the plugin’s data folder to store the clients.json file.
+ * If the file does not exist, it is created with an empty JSON array.
+ */
+class ClientStorage(private val dataFolder: File) {
     private val clients = mutableListOf<Client>()
-    private val file = File("plugins/MineChat/clients.json")
+    private val file = File(dataFolder, "clients.json")
 
     fun find(clientUuid: String): Client? {
         return clients.find { it.clientUuid == clientUuid }
@@ -199,10 +251,16 @@ class ClientStorage {
     }
 
     fun load() {
-        if (!file.exists()) return
+        if (!file.exists()) {
+            file.parentFile.mkdirs()
+            file.writeText("[]")
+            return
+        }
         val json = file.readText()
-        val type = object : TypeToken<List<Client>>() {}.type
-        clients.addAll(Gson().fromJson(json, type))
+        if (json.isNotBlank()) {
+            val type = object : TypeToken<List<Client>>() {}.type
+            clients.addAll(Gson().fromJson(json, type))
+        }
     }
 
     fun save() {
@@ -234,7 +292,7 @@ class ClientConnection(
             plugin.logger.warning("Client error: ${e.message}")
         } finally {
             client?.let {
-                plugin.broadcastMinecraft("§8[§3MineChat§8] §a${it.minecraftUsername} has left the chat.")
+                plugin.broadcastMinecraft(plugin.formatPrefixed("&a${it.minecraftUsername} has left the chat."))
                 plugin.broadcastToClients(
                     Gson().toJson(
                         mapOf(
@@ -277,7 +335,7 @@ class ClientConnection(
                         )
                     )
                 )
-                plugin.broadcastMinecraft("§8[§3MineChat§8] §a${link.minecraftUsername} has successfully authenticated.")
+                plugin.broadcastMinecraft(plugin.formatPrefixed("&a${link.minecraftUsername} has successfully authenticated."))
                 plugin.broadcastToClients(
                     Gson().toJson(
                         mapOf(
@@ -320,7 +378,7 @@ class ClientConnection(
                         )
                     )
                 )
-                plugin.broadcastMinecraft("§8[§3MineChat§8] §a${client.minecraftUsername} has joined the chat.")
+                plugin.broadcastMinecraft(plugin.formatPrefixed("&a${client.minecraftUsername} has joined the chat."))
                 plugin.broadcastToClients(
                     Gson().toJson(
                         mapOf(
@@ -352,7 +410,7 @@ class ClientConnection(
     private fun handleChat(payload: JsonObject) {
         client?.let {
             val message = payload.get("message").asString
-            plugin.broadcastMinecraft("§8[§3MineChat§8] §2${it.minecraftUsername}§8: §7$message")
+            plugin.broadcastMinecraft(plugin.formatPrefixed("&2${it.minecraftUsername}&8: &7$message"))
             plugin.broadcastToClients(
                 Gson().toJson(
                     mapOf(
