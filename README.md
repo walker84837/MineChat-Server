@@ -66,7 +66,7 @@ Contributions are welcome! Feel free to open [issues](https://github.com/walker8
 
 - [ ] Allow for messages sent from MineChat clients to be visible to plugins like Discord bridges, such as [DiscordSRV](https://github.com/DiscordSRV/DiscordSRV).
 - [ ] Consider switching to a more efficient format for persistent storage
-- [ ] Allow for configuration, such as port, etc
+- [X] Allow for configuration, such as port, etc
 
 ## License
 
