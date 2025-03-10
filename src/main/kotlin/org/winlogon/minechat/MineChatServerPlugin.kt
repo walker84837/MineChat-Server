@@ -33,13 +33,16 @@ class MineChatServerPlugin : JavaPlugin() {
     private val connectedClients = CopyOnWriteArrayList<ClientConnection>()
     private lateinit var linkCodeStorage: LinkCodeStorage
     private lateinit var clientStorage: ClientStorage
-    private val port = 25575
+
+    private var port: Int = 25575
+
     private var serverThread: Thread? = null
     @Volatile private var isServerRunning = false
 
     override fun onEnable() {
         saveDefaultConfig()
-        // Ensure the plugin's data folder exists.
+        port = config.getInt("port", 25575)
+        
         if (!dataFolder.exists()) {
             dataFolder.mkdirs()
         }

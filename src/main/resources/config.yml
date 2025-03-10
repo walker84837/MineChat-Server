@@ -1,1 +1,3 @@
-hi: 'hello'
+# MineChat - Chat to players on Minecraft, using external apps!
+
+port: 25575
