@@ -117,6 +117,7 @@ class MineChatServerPlugin : JavaPlugin() {
         serverSocket = ServerSocket(port)
         logger.info("Starting MineChat server on port $port")
 
+        // 60 000 ms = 1 minute
         Timer().schedule(0, 60_000) {
             linkCodeStorage.cleanupExpired()
         }
