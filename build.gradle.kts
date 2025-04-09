@@ -53,16 +53,18 @@ repositories {
             includeModule("com.mojang", "brigadier")
         }
     }
+
     maven {
-        url = uri("https://repo.codemc.org/repository/maven-public/")
+        url = uri("https://libraries.minecraft.net")
     }
+
     mavenCentral()
 }
 
 dependencies {
     compileOnly("io.papermc.paper:paper-api:1.21.4-R0.1-SNAPSHOT")
     compileOnly("net.kyori:adventure-text-serializer-plain:4.19.0")
-    compileOnly("dev.jorel:commandapi-bukkit-core:9.7.0")
+    compileOnly("com.mojang:brigadier:1.1.8")
     
     testRuntimeOnly("org.junit.platform:junit-platform-launcher:1.11.4")
     testImplementation("io.papermc.paper:paper-api:1.21.4-R0.1-SNAPSHOT")

@@ -3,29 +3,39 @@ package org.winlogon.minechat
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.google.gson.reflect.TypeToken
-import dev.jorel.commandapi.CommandAPICommand
-import dev.jorel.commandapi.executors.PlayerCommandExecutor
+import com.mojang.brigadier.Command
+
 import org.bukkit.Bukkit
 import org.bukkit.event.EventHandler
 import org.bukkit.event.Listener
-import io.papermc.paper.event.player.AsyncChatEvent
+import org.bukkit.entity.Player
 import org.bukkit.plugin.java.JavaPlugin
+
+import io.papermc.paper.event.player.AsyncChatEvent
+import io.papermc.paper.command.brigadier.CommandSourceStack
+import io.papermc.paper.command.brigadier.Commands
+import io.papermc.paper.command.brigadier.BasicCommand
+import io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents
+
 import net.kyori.adventure.text.Component
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer
+import net.kyori.adventure.text.format.NamedTextColor
+import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer
 import net.kyori.adventure.text.minimessage.MiniMessage
+
 import java.io.File
 import java.net.ServerSocket
 import java.util.*
 import java.util.concurrent.CopyOnWriteArrayList
+
 import kotlin.concurrent.schedule
 
 class MineChatServerPlugin : JavaPlugin() {
 
     companion object {
-        // The raw legacy string prefix is stored as a constant.
+        // The raw legacy string prefix is stored as a constant and we pre-convert it into a Component.
         const val MINECHAT_PREFIX_STRING = "&8[&3MineChat&8]"
-        // And we pre-convert it into a Component.
         val MINECHAT_PREFIX_COMPONENT: Component = LegacyComponentSerializer.legacyAmpersand().deserialize(MINECHAT_PREFIX_STRING)
     }
 
@@ -39,35 +49,70 @@ class MineChatServerPlugin : JavaPlugin() {
     private var serverThread: Thread? = null
     @Volatile private var isServerRunning = false
 
+    private fun generateLinkCode(): String {
+        val chars = ('A'..'Z') + ('0'..'9')
+        return (1..6).map { chars.random() }.joinToString("")
+    }
+
+    fun generateAndSendLinkCode(player: Player) {
+        val code = generateLinkCode()
+        val expiryMs = 300_000 // 5 minutes
+        
+        linkCodeStorage.add(
+            LinkCode(
+                code = code,
+                minecraftUuid = player.uniqueId,
+                minecraftUsername = player.name,
+                expiresAt = System.currentTimeMillis() + expiryMs
+            )
+        )
+
+        val codeComponent = Component.text(code, NamedTextColor.DARK_AQUA)
+        val timeComponent = Component.text("${expiryMs / 60000} minutes", NamedTextColor.DARK_GREEN)
+        player.sendRichMessage(
+            "<gray>Your link code is: <code>. Use it in the client within <expiry_time>.</gray>",
+            Placeholder.component("code", codeComponent),
+            Placeholder.component("expiry_time", timeComponent)
+        )
+    }
+
+    fun registerLinkCommand() {
+        val linkCommand = Commands.literal("link")
+            .executes { ctx ->
+                val sender = ctx.source.sender
+                if (sender is Player) {
+                    generateAndSendLinkCode(sender)
+                    Command.SINGLE_SUCCESS
+                } else {
+                    sender.sendMessage(
+                        Component.text("Only players can use this command!", NamedTextColor.RED)
+                    )
+                    0
+                }
+            }
+            .build()
+
+        this.getLifecycleManager().registerEventHandler(LifecycleEvents.COMMANDS) { event ->
+            event.registrar().register(linkCommand)
+        }
+    }
+
     override fun onEnable() {
+        saveResource("config.yml", false)
         saveDefaultConfig()
+
         port = config.getInt("port", 25575)
         
         if (!dataFolder.exists()) {
             dataFolder.mkdirs()
         }
-        // Initialize storage using the built–in data folder.
+
         linkCodeStorage = LinkCodeStorage(dataFolder)
         clientStorage = ClientStorage(dataFolder)
         linkCodeStorage.load()
         clientStorage.load()
 
-        CommandAPICommand("link")
-            .executesPlayer(PlayerCommandExecutor { player, _ ->
-                val code = generateLinkCode()
-                val fiveMinutesInMs = 300_000
-                linkCodeStorage.add(
-                    LinkCode(
-                        code = code,
-                        minecraftUuid = player.uniqueId,
-                        minecraftUsername = player.name,
-                        expiresAt = System.currentTimeMillis() + fiveMinutesInMs
-                    )
-                )
-                // Use our helper to format the message (which uses MiniMessage if detected or legacy otherwise)
-                player.sendMessage(formatMessage("&7Your link code is: &3$code&7. Use it in the client within &25 minutes."))
-            })
-            .register()
+        registerLinkCommand()
 
         serverSocket = ServerSocket(port)
         logger.info("Starting MineChat server on port $port")
@@ -127,11 +172,6 @@ class MineChatServerPlugin : JavaPlugin() {
         } catch (e: InterruptedException) {
             Thread.currentThread().interrupt()
         }
-    }
-
-    private fun generateLinkCode(): String {
-        val chars = ('A'..'Z') + ('0'..'9')
-        return (1..6).map { chars.random() }.joinToString("")
     }
 
     fun broadcastToClients(message: String) {
