@@ -1,5 +1,7 @@
 package org.winlogon.minechat
 
+import com.github.benmanes.caffeine.cache.Caffeine
+import com.github.benmanes.caffeine.cache.Expiry
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.google.gson.reflect.TypeToken
@@ -27,9 +29,13 @@ import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer
 import java.io.File
 import java.net.ServerSocket
 import java.util.*
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.CopyOnWriteArrayList
-
 import kotlin.concurrent.schedule
+
+data class Config(
+    val port: Int
+)
 
 class MineChatServerPlugin : JavaPlugin() {
 
@@ -45,7 +51,6 @@ class MineChatServerPlugin : JavaPlugin() {
     private lateinit var clientStorage: ClientStorage
 
     private var port: Int = 25575
-
     private var serverThread: Thread? = null
     @Volatile private var isServerRunning = false
 
@@ -57,15 +62,14 @@ class MineChatServerPlugin : JavaPlugin() {
     fun generateAndSendLinkCode(player: Player) {
         val code = generateLinkCode()
         val expiryMs = 300_000 // 5 minutes
-        
-        linkCodeStorage.add(
-            LinkCode(
-                code = code,
-                minecraftUuid = player.uniqueId,
-                minecraftUsername = player.name,
-                expiresAt = System.currentTimeMillis() + expiryMs
-            )
+
+        val link = LinkCode(
+            code = code,
+            minecraftUuid = player.uniqueId,
+            minecraftUsername = player.name,
+            expiresAt = System.currentTimeMillis() + expiryMs
         )
+        linkCodeStorage.add(link)
 
         val codeComponent = Component.text(code, NamedTextColor.DARK_AQUA)
         val timeComponent = Component.text("${expiryMs / 60000} minutes", NamedTextColor.DARK_GREEN)
@@ -102,11 +106,12 @@ class MineChatServerPlugin : JavaPlugin() {
         saveDefaultConfig()
 
         port = config.getInt("port", 25575)
-        
+
         if (!dataFolder.exists()) {
             dataFolder.mkdirs()
         }
 
+        // Use our modified storage classes with Caffeine cache
         linkCodeStorage = LinkCodeStorage(dataFolder)
         clientStorage = ClientStorage(dataFolder)
         linkCodeStorage.load()
@@ -117,9 +122,10 @@ class MineChatServerPlugin : JavaPlugin() {
         serverSocket = ServerSocket(port)
         logger.info("Starting MineChat server on port $port")
 
-        // 60 000 ms = 1 minute
+        // Flush updated caches to file every minute
         Timer().schedule(0, 60_000) {
-            linkCodeStorage.cleanupExpired()
+            linkCodeStorage.cleanupExpired() // also flushes to file via save()
+            clientStorage.save()
         }
 
         isServerRunning = true
@@ -231,30 +237,50 @@ data class Client(
 )
 
 /**
- * Uses the plugin’s data folder to store the link_codes.json file.
- * If the file does not exist, it is created with an empty JSON array.
+ * LinkCodeStorage now uses a Caffeine cache to store LinkCode objects in memory.
+ * The custom expiry policy automatically removes entries based on each link's expiresAt timestamp.
+ * Data is (re)loaded from and flushed to disk.
  */
 class LinkCodeStorage(private val dataFolder: File) {
-    private val linkCodes = mutableListOf<LinkCode>()
-    private val file = File(dataFolder, "link_codes.json")
 
-    fun add(code: LinkCode) {
-        linkCodes.add(code)
+    private val file = File(dataFolder, "link_codes.json")
+    private val gson = Gson()
+
+    private val linkCodeCache = Caffeine.newBuilder()
+        .expireAfter(object : Expiry<String, LinkCode> {
+            override fun expireAfterCreate(key: String, value: LinkCode, currentTime: Long): Long {
+                // currentTime is in nanoseconds; compute remaining time in nanos.
+                val remainingMillis = value.expiresAt - System.currentTimeMillis()
+                return TimeUnit.MILLISECONDS.toNanos(remainingMillis.coerceAtLeast(0L))
+            }
+
+            override fun expireAfterUpdate(key: String, value: LinkCode, currentTime: Long, currentDuration: Long): Long {
+                return currentDuration
+            }
+
+            override fun expireAfterRead(key: String, value: LinkCode, currentTime: Long, currentDuration: Long): Long {
+                return currentDuration
+            }
+        })
+        .build<String, LinkCode>()
+
+    fun add(linkCode: LinkCode) {
+        linkCodeCache.put(linkCode.code, linkCode)
         save()
     }
 
     fun find(code: String): LinkCode? {
-        return linkCodes.find { it.code == code }
+        return linkCodeCache.getIfPresent(code)
     }
 
     fun remove(code: String) {
-        linkCodes.removeIf { it.code == code }
+        linkCodeCache.invalidate(code)
         save()
     }
 
     fun cleanupExpired() {
-        val now = System.currentTimeMillis()
-        linkCodes.removeIf { it.expiresAt < now }
+        // Force a cleanup which will remove expired entries
+        linkCodeCache.cleanUp()
         save()
     }
 
@@ -267,29 +293,35 @@ class LinkCodeStorage(private val dataFolder: File) {
         val json = file.readText()
         if (json.isNotBlank()) {
             val type = object : TypeToken<List<LinkCode>>() {}.type
-            linkCodes.addAll(Gson().fromJson(json, type))
+            val codes: List<LinkCode> = gson.fromJson(json, type)
+            codes.forEach { linkCodeCache.put(it.code, it) }
         }
     }
 
     fun save() {
-        file.writeText(Gson().toJson(linkCodes))
+        // Write the current cache as a list to disk.
+        val codes = linkCodeCache.asMap().values.toList()
+        file.writeText(gson.toJson(codes))
     }
 }
 
 /**
- * Uses the plugin’s data folder to store the clients.json file.
- * If the file does not exist, it is created with an empty JSON array.
+ * ClientStorage now uses a simple Caffeine cache.
  */
 class ClientStorage(private val dataFolder: File) {
-    private val clients = mutableListOf<Client>()
+
     private val file = File(dataFolder, "clients.json")
+    private val gson = Gson()
+
+    private val clientCache = Caffeine.newBuilder()
+        .build<String, Client>()
 
     fun find(clientUuid: String): Client? {
-        return clients.find { it.clientUuid == clientUuid }
+        return clientCache.getIfPresent(clientUuid)
     }
 
     fun add(client: Client) {
-        clients.add(client)
+        clientCache.put(client.clientUuid, client)
         save()
     }
 
@@ -302,12 +334,14 @@ class ClientStorage(private val dataFolder: File) {
         val json = file.readText()
         if (json.isNotBlank()) {
             val type = object : TypeToken<List<Client>>() {}.type
-            clients.addAll(Gson().fromJson(json, type))
+            val clients: List<Client> = gson.fromJson(json, type)
+            clients.forEach { clientCache.put(it.clientUuid, it) }
         }
     }
 
     fun save() {
-        file.writeText(Gson().toJson(clients))
+        val clients = clientCache.asMap().values.toList()
+        file.writeText(gson.toJson(clients))
     }
 }
 
@@ -315,6 +349,7 @@ class ClientConnection(
     private val socket: java.net.Socket,
     private val plugin: MineChatServerPlugin
 ) : Thread() {
+
     private val reader = socket.getInputStream().bufferedReader()
     private val writer = socket.getOutputStream().bufferedWriter()
     private var client: Client? = null

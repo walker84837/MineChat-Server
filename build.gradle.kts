@@ -65,6 +65,7 @@ dependencies {
     compileOnly("io.papermc.paper:paper-api:1.21.4-R0.1-SNAPSHOT")
     compileOnly("net.kyori:adventure-text-serializer-plain:4.19.0")
     compileOnly("com.mojang:brigadier:1.1.8")
+    compileOnly("com.github.ben-manes.caffeine:caffeine:3.2.0")
     
     testRuntimeOnly("org.junit.platform:junit-platform-launcher:1.11.4")
     testImplementation("io.papermc.paper:paper-api:1.21.4-R0.1-SNAPSHOT")
