@@ -42,8 +42,10 @@ class MineChatServerPlugin : JavaPlugin() {
     private val connectedClients = CopyOnWriteArrayList<ClientConnection>()
     private lateinit var linkCodeStorage: LinkCodeStorage
     private lateinit var clientStorage: ClientStorage
+    private var isFolia = false
 
     private var port: Int = 25575
+    private var expiryCodeMs = 300_000 // 5 minutes
     private var serverThread: Thread? = null
     @Volatile private var isServerRunning = false
 
@@ -54,18 +56,17 @@ class MineChatServerPlugin : JavaPlugin() {
 
     fun generateAndSendLinkCode(player: Player) {
         val code = generateLinkCode()
-        val expiryMs = 300_000 // 5 minutes
 
         val link = LinkCode(
             code = code,
             minecraftUuid = player.uniqueId,
             minecraftUsername = player.name,
-            expiresAt = System.currentTimeMillis() + expiryMs
+            expiresAt = System.currentTimeMillis() + expiryCodeMs
         )
         linkCodeStorage.add(link)
 
         val codeComponent = Component.text(code, NamedTextColor.DARK_AQUA)
-        val timeComponent = Component.text("${expiryMs / 60000} minutes", NamedTextColor.DARK_GREEN)
+        val timeComponent = Component.text("${expiryCodeMs / 60000} minutes", NamedTextColor.DARK_GREEN)
         player.sendRichMessage(
             "<gray>Your link code is: <code>. Use it in the client within <expiry_time>.</gray>",
             Placeholder.component("code", codeComponent),
@@ -95,10 +96,18 @@ class MineChatServerPlugin : JavaPlugin() {
     }
 
     override fun onEnable() {
+        isFolia = try {
+            Class.forName("io.papermc.paper.threadedregions.RegionizedServer")
+            true
+        } catch (e: ClassNotFoundException) {
+            false
+        }
+
         saveResource("config.yml", false)
         saveDefaultConfig()
 
         port = config.getInt("port", 25575)
+        expiryCodeMs = config.getInt("expiry-code-minutes", 5) * 60_000
 
         if (!dataFolder.exists()) {
             dataFolder.mkdirs()
