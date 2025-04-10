@@ -9,7 +9,7 @@ import org.eclipse.aether.repository.RemoteRepository
 
 import java.nio.file.Path
 
-class MineChatPluginLoader : PluginLoader {
+class MineChatLoader : PluginLoader {
     override fun classloader(classpathBuilder: PluginClasspathBuilder) {
 	val caffeineVersion = "3.2.0";
         val resolver = MavenLibraryResolver().apply {

@@ -38,13 +38,6 @@ data class Config(
 )
 
 class MineChatServerPlugin : JavaPlugin() {
-
-    companion object {
-        // The raw legacy string prefix is stored as a constant and we pre-convert it into a Component.
-        const val MINECHAT_PREFIX_STRING = "&8[&3MineChat&8]"
-        val MINECHAT_PREFIX_COMPONENT: Component = LegacyComponentSerializer.legacyAmpersand().deserialize(MINECHAT_PREFIX_STRING)
-    }
-
     private var serverSocket: ServerSocket? = null
     private val connectedClients = CopyOnWriteArrayList<ClientConnection>()
     private lateinit var linkCodeStorage: LinkCodeStorage
@@ -111,7 +104,7 @@ class MineChatServerPlugin : JavaPlugin() {
             dataFolder.mkdirs()
         }
 
-        // Use our modified storage classes with Caffeine cache
+        // Initialize storage
         linkCodeStorage = LinkCodeStorage(dataFolder)
         clientStorage = ClientStorage(dataFolder)
         linkCodeStorage.load()
@@ -192,35 +185,9 @@ class MineChatServerPlugin : JavaPlugin() {
         }
     }
 
-    fun broadcastMinecraft(component: Component) {
-        Bukkit.getOnlinePlayers().forEach { it.sendMessage(component) }
-    }
-
     fun getLinkCodeStorage(): LinkCodeStorage = linkCodeStorage
     fun getClientStorage(): ClientStorage = clientStorage
     fun removeClient(client: ClientConnection) = connectedClients.remove(client)
-
-    /**
-     * Format a message using Adventure.
-     * If the string contains MiniMessage tags (<...>) then MiniMessage is used;
-     * otherwise the legacy ampersand formatter is applied.
-     */
-    fun formatMessage(message: String): Component {
-        return if (message.contains('<') && message.contains('>')) {
-            MiniMessage.miniMessage().deserialize(message)
-        } else {
-            LegacyComponentSerializer.legacyAmpersand().deserialize(message)
-        }
-    }
-
-    /**
-     * Helper to prepend the MineChat prefix to a message.
-     */
-    fun formatPrefixed(message: String): Component {
-        return MINECHAT_PREFIX_COMPONENT
-            .append(Component.space())
-            .append(formatMessage(message))
-    }
 }
 
 data class LinkCode(
@@ -237,7 +204,7 @@ data class Client(
 )
 
 /**
- * LinkCodeStorage now uses a Caffeine cache to store LinkCode objects in memory.
+ * LinkCodeStorage uses a Caffeine cache to store LinkCode objects in memory.
  * The custom expiry policy automatically removes entries based on each link's expiresAt timestamp.
  * Data is (re)loaded from and flushed to disk.
  */
@@ -349,17 +316,41 @@ class ClientConnection(
     private val socket: java.net.Socket,
     private val plugin: MineChatServerPlugin
 ) : Thread() {
+    object ChatGradients {
+        val JOIN = Pair("#2ECC71", "#27AE60")
+        val LEAVE = Pair("#E74C3C", "#C0392B")
+        val AUTH = Pair("#9B59B6", "#8E44AD")
+        val INFO = Pair("#3498DB", "#2980B9")
+    }
+
+    companion object {
+        // The raw legacy string prefix is stored as a constant and we pre-convert it into a Component.
+        const val MINECHAT_PREFIX_STRING = "&8[&3MineChat&8]"
+        val MINECHAT_PREFIX_COMPONENT: Component = LegacyComponentSerializer.legacyAmpersand().deserialize(MINECHAT_PREFIX_STRING)
+    }
 
     private val reader = socket.getInputStream().bufferedReader()
     private val writer = socket.getOutputStream().bufferedWriter()
+    private val mm = MiniMessage.miniMessage()
+    private val gson = Gson()
     private var client: Client? = null
     private var running = true
+
+    /*
+     * Broadcasts a message to all connected clients, prefixed with the MineChat prefix and colored 
+     * with an optional gradient.
+     */
+    private fun broadcastMinecraft(colors: Pair<String, String>?, message: String) {
+	val formattedMessage = if (colors == null) message else "<gradient:${colors.first}:${colors.second}>$message</gradient>"
+	val finalMessage = mm.deserialize(formattedMessage)
+        Bukkit.broadcast(formatPrefixed(finalMessage))
+    }
 
     override fun run() {
         try {
             while (running) {
                 val line = reader.readLine() ?: break
-                val json = Gson().fromJson(line, JsonObject::class.java)
+                val json = gson.fromJson(line, JsonObject::class.java)
                 when (json.get("type").asString) {
                     "AUTH" -> handleAuth(json.getAsJsonObject("payload"))
                     "CHAT" -> handleChat(json.getAsJsonObject("payload"))
@@ -370,9 +361,9 @@ class ClientConnection(
             plugin.logger.warning("Client error: ${e.message}")
         } finally {
             client?.let {
-                plugin.broadcastMinecraft(plugin.formatPrefixed("&a${it.minecraftUsername} has left the chat."))
+                broadcastMinecraft(ChatGradients.LEAVE, "${it.minecraftUsername} has left the chat.")
                 plugin.broadcastToClients(
-                    Gson().toJson(
+                    gson.toJson(
                         mapOf(
                             "type" to "SYSTEM",
                             "payload" to mapOf(
@@ -401,7 +392,7 @@ class ClientConnection(
                 plugin.getLinkCodeStorage().remove(link.code)
                 this.client = client
                 sendMessage(
-                    Gson().toJson(
+                    gson.toJson(
                         mapOf(
                             "type" to "AUTH_ACK",
                             "payload" to mapOf(
@@ -413,9 +404,9 @@ class ClientConnection(
                         )
                     )
                 )
-                plugin.broadcastMinecraft(plugin.formatPrefixed("&a${link.minecraftUsername} has successfully authenticated."))
+                broadcastMinecraft(ChatGradients.AUTH, "${link.minecraftUsername} has successfully authenticated.")
                 plugin.broadcastToClients(
-                    Gson().toJson(
+                    gson.toJson(
                         mapOf(
                             "type" to "SYSTEM",
                             "payload" to mapOf(
@@ -428,7 +419,7 @@ class ClientConnection(
                 )
             } else {
                 sendMessage(
-                    Gson().toJson(
+                    gson.toJson(
                         mapOf(
                             "type" to "AUTH_ACK",
                             "payload" to mapOf(
@@ -444,7 +435,7 @@ class ClientConnection(
             if (client != null) {
                 this.client = client
                 sendMessage(
-                    Gson().toJson(
+                    gson.toJson(
                         mapOf(
                             "type" to "AUTH_ACK",
                             "payload" to mapOf(
@@ -456,9 +447,9 @@ class ClientConnection(
                         )
                     )
                 )
-                plugin.broadcastMinecraft(plugin.formatPrefixed("&a${client.minecraftUsername} has joined the chat."))
+                broadcastMinecraft(ChatGradients.JOIN,"${client.minecraftUsername} has joined the chat.")
                 plugin.broadcastToClients(
-                    Gson().toJson(
+                    gson.toJson(
                         mapOf(
                             "type" to "SYSTEM",
                             "payload" to mapOf(
@@ -471,7 +462,7 @@ class ClientConnection(
                 )
             } else {
                 sendMessage(
-                    Gson().toJson(
+                    gson.toJson(
                         mapOf(
                             "type" to "AUTH_ACK",
                             "payload" to mapOf(
@@ -488,9 +479,19 @@ class ClientConnection(
     private fun handleChat(payload: JsonObject) {
         client?.let {
             val message = payload.get("message").asString
-            plugin.broadcastMinecraft(plugin.formatPrefixed("&2${it.minecraftUsername}&8: &7$message"))
+
+	    val usernamePlaceholder = Component.text(it.minecraftUsername, NamedTextColor.DARK_GREEN)
+	    val messagePladeholder = Component.text(message)
+	    val formattedMsg = mm.deserialize(
+		    "<gray><sender><dark_gray>:</dark_gray> <message></gray>",
+		    Placeholder.component("sender", usernamePlaceholder),
+		    Placeholder.component("message", messagePladeholder)
+	    )
+
+	    val finalMsg = formatPrefixed(formattedMsg)
+            Bukkit.broadcast(finalMsg)
             plugin.broadcastToClients(
-                Gson().toJson(
+                gson.toJson(
                     mapOf(
                         "type" to "BROADCAST",
                         "payload" to mapOf(
@@ -516,5 +517,14 @@ class ClientConnection(
     fun close() {
         running = false
         socket.close()
+    }
+
+    /**
+     * Helper to prepend the MineChat prefix to a message.
+     */
+    fun formatPrefixed(message: Component): Component {
+        return MINECHAT_PREFIX_COMPONENT
+            .append(Component.space())
+            .append(message)
     }
 }
