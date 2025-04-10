@@ -8,10 +8,21 @@ plugins {
 
 group = "org.winlogon.minechat"
 
-fun getTime(): String {
-    val sdf = SimpleDateFormat("yyMMdd-HHmm")
-    sdf.timeZone = TimeZone.getTimeZone("UTC")
-    return sdf.format(Date()).toString()
+fun getLatestGitTag(): String? {
+    return try {
+        val process = ProcessBuilder("git", "describe", "--tags", "--abbrev=0")
+            .redirectOutput(ProcessBuilder.Redirect.PIPE)
+            .redirectError(ProcessBuilder.Redirect.PIPE)
+            .start()
+        process.waitFor()
+        if (process.exitValue() == 0) {
+            process.inputStream.bufferedReader().readText().trim()
+        } else {
+            null
+        }
+    } catch (e: Exception) {
+        null
+    }
 }
 
 val shortVersion: String? = if (project.hasProperty("ver")) {
@@ -22,11 +33,11 @@ val shortVersion: String? = if (project.hasProperty("ver")) {
         ver.uppercase()
     }
 } else {
-    null
+    getLatestGitTag()
 }
 
 val version: String = when {
-    shortVersion.isNullOrEmpty() -> "${getTime()}-SNAPSHOT"
+    shortVersion.isNullOrEmpty() -> "0.0.0-SNAPSHOT"
     shortVersion.contains("-RC-") -> shortVersion.substringBefore("-RC-") + "-SNAPSHOT"
     else -> shortVersion
 }
