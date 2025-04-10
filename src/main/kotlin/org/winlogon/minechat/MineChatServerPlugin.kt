@@ -1,7 +1,6 @@
 package org.winlogon.minechat
 
 import com.github.benmanes.caffeine.cache.Caffeine
-import com.github.benmanes.caffeine.cache.Expiry
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.google.gson.reflect.TypeToken
@@ -18,6 +17,7 @@ import io.papermc.paper.command.brigadier.CommandSourceStack
 import io.papermc.paper.command.brigadier.Commands
 import io.papermc.paper.event.player.AsyncChatEvent
 import io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents
+import io.papermc.paper.threadedregions.scheduler.AsyncScheduler
 
 import net.kyori.adventure.text.Component
 import net.kyori.adventure.text.format.NamedTextColor
@@ -29,8 +29,8 @@ import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer
 import java.io.File
 import java.net.ServerSocket
 import java.util.*
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.*
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.schedule
 
 data class Config(
@@ -48,6 +48,9 @@ class MineChatServerPlugin : JavaPlugin() {
     private var expiryCodeMs = 300_000 // 5 minutes
     private var serverThread: Thread? = null
     @Volatile private var isServerRunning = false
+    private val executorService = Executors.newCachedThreadPool()
+    val gson = Gson()
+    val miniMessage = MiniMessage.miniMessage()
 
     private fun generateLinkCode(): String {
         val chars = ('A'..'Z') + ('0'..'9')
@@ -74,24 +77,34 @@ class MineChatServerPlugin : JavaPlugin() {
         )
     }
 
-    fun registerLinkCommand() {
+    fun registerCommands() {
         val linkCommand = Commands.literal("link")
+            .requires { sender -> sender.getExecutor() is Player } 
             .executes { ctx ->
                 val sender = ctx.source.sender
-                if (sender is Player) {
-                    generateAndSendLinkCode(sender)
-                    Command.SINGLE_SUCCESS
-                } else {
-                    sender.sendMessage(
-                        Component.text("Only players can use this command!", NamedTextColor.RED)
-                    )
-                    0
-                }
+                generateAndSendLinkCode(sender as Player)
+                Command.SINGLE_SUCCESS
+            }
+            .build()
+
+        val reloadCommand = Commands.literal("minechatreload")
+            .requires { sender -> sender.getSender().hasPermission("minechat.reload") }
+            .executes { ctx ->
+                val sender = ctx.source.sender
+                reloadConfig()
+                port = config.getInt("port", 25575)
+                expiryCodeMs = config.getInt("expiry-code-minutes", 5) * 60_000
+                linkCodeStorage.load()
+                clientStorage.load()
+                sender.sendRichMessage("<gray>MineChat config and storage reloaded.</gray>")
+                Command.SINGLE_SUCCESS
             }
             .build()
 
         this.getLifecycleManager().registerEventHandler(LifecycleEvents.COMMANDS) { event ->
-            event.registrar().register(linkCommand)
+            val registrar = event.registrar()
+            registrar.register(linkCommand)
+            registrar.register(reloadCommand)
         }
     }
 
@@ -104,30 +117,34 @@ class MineChatServerPlugin : JavaPlugin() {
         }
 
         saveResource("config.yml", false)
-        saveDefaultConfig()
+        reloadConfig()
 
         port = config.getInt("port", 25575)
         expiryCodeMs = config.getInt("expiry-code-minutes", 5) * 60_000
 
-        if (!dataFolder.exists()) {
-            dataFolder.mkdirs()
-        }
+        dataFolder.mkdirs()
 
-        // Initialize storage
-        linkCodeStorage = LinkCodeStorage(dataFolder)
-        clientStorage = ClientStorage(dataFolder)
+        linkCodeStorage = LinkCodeStorage(dataFolder, gson)
+        clientStorage = ClientStorage(dataFolder, gson)
         linkCodeStorage.load()
         clientStorage.load()
 
-        registerLinkCommand()
+        registerCommands()
 
         serverSocket = ServerSocket(port)
         logger.info("Starting MineChat server on port $port")
 
-        // Flush updated caches to file every minute
-        Timer().schedule(0, 60_000) {
-            linkCodeStorage.cleanupExpired() // also flushes to file via save()
+        val saveTask = Runnable {
+            linkCodeStorage.cleanupExpired()
+            linkCodeStorage.save()
             clientStorage.save()
+        }
+
+        if (isFolia) {
+            val scheduler = server.getAsyncScheduler()
+            scheduler.runAtFixedRate(this, { _ -> saveTask.run() }, 1, 1, TimeUnit.MINUTES)
+        } else {
+            server.scheduler.runTaskTimer(this, saveTask, 0, 20 * 60)
         }
 
         isServerRunning = true
@@ -138,14 +155,12 @@ class MineChatServerPlugin : JavaPlugin() {
                     val socket = serverSocket?.accept()
                     if (socket != null) {
                         logger.info("Client connected: ${socket.inetAddress}")
-                        val connection = ClientConnection(socket, this@MineChatServerPlugin)
+                        val connection = ClientConnection(socket, this, gson, miniMessage)
                         connectedClients.add(connection)
-                        connection.start()
+                        executorService.submit(connection)
                     }
                 } catch (e: Exception) {
-                    if (!isServerRunning) {
-                        break
-                    }
+                    if (!isServerRunning) break
                     logger.warning("Error accepting client: ${e.message}")
                 }
             }
@@ -164,7 +179,7 @@ class MineChatServerPlugin : JavaPlugin() {
                         "message" to plainMsg
                     )
                 )
-                broadcastToClients(Gson().toJson(message))
+                broadcastToClients(gson.toJson(message))
             }
         }, this)
     }
@@ -174,6 +189,12 @@ class MineChatServerPlugin : JavaPlugin() {
         serverThread?.interrupt()
         serverSocket?.close()
         connectedClients.forEach { it.close() }
+        executorService.shutdownNow()
+        try {
+            executorService.awaitTermination(10, TimeUnit.SECONDS)
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
         linkCodeStorage.save()
         clientStorage.save()
         try {
@@ -212,57 +233,39 @@ data class Client(
     val minecraftUsername: String
 )
 
-/**
- * LinkCodeStorage uses a Caffeine cache to store LinkCode objects in memory.
- * The custom expiry policy automatically removes entries based on each link's expiresAt timestamp.
- * Data is (re)loaded from and flushed to disk.
- */
-class LinkCodeStorage(private val dataFolder: File) {
-
+class LinkCodeStorage(private val dataFolder: File, private val gson: Gson) {
     private val file = File(dataFolder, "link_codes.json")
-    private val gson = Gson()
-
-    private val linkCodeCache = Caffeine.newBuilder()
-        .expireAfter(object : Expiry<String, LinkCode> {
-            override fun expireAfterCreate(key: String, value: LinkCode, currentTime: Long): Long {
-                // currentTime is in nanoseconds; compute remaining time in nanos.
-                val remainingMillis = value.expiresAt - System.currentTimeMillis()
-                return TimeUnit.MILLISECONDS.toNanos(remainingMillis.coerceAtLeast(0L))
-            }
-
-            override fun expireAfterUpdate(key: String, value: LinkCode, currentTime: Long, currentDuration: Long): Long {
-                return currentDuration
-            }
-
-            override fun expireAfterRead(key: String, value: LinkCode, currentTime: Long, currentDuration: Long): Long {
-                return currentDuration
-            }
-        })
-        .build<String, LinkCode>()
+    private val linkCodeCache = Caffeine.newBuilder().build<String, LinkCode>().asMap()
+    private var isDirty = AtomicBoolean(false)
 
     fun add(linkCode: LinkCode) {
-        linkCodeCache.put(linkCode.code, linkCode)
-        save()
+        linkCodeCache[linkCode.code] = linkCode
+        isDirty.set(true)
     }
 
-    fun find(code: String): LinkCode? {
-        return linkCodeCache.getIfPresent(code)
-    }
+    fun find(code: String): LinkCode? = linkCodeCache[code]
 
     fun remove(code: String) {
-        linkCodeCache.invalidate(code)
-        save()
+        linkCodeCache.remove(code)
+        isDirty.set(true)
     }
 
     fun cleanupExpired() {
-        // Force a cleanup which will remove expired entries
-        linkCodeCache.cleanUp()
-        save()
+        val now = System.currentTimeMillis()
+        var modified = false
+        val iterator = linkCodeCache.iterator()
+        while (iterator.hasNext()) {
+            val entry = iterator.next()
+            if (entry.value.expiresAt <= now) {
+                iterator.remove()
+                modified = true
+            }
+        }
+        if (modified) isDirty.set(true)
     }
 
     fun load() {
         if (!file.exists()) {
-            file.parentFile.mkdirs()
             file.writeText("[]")
             return
         }
@@ -270,40 +273,33 @@ class LinkCodeStorage(private val dataFolder: File) {
         if (json.isNotBlank()) {
             val type = object : TypeToken<List<LinkCode>>() {}.type
             val codes: List<LinkCode> = gson.fromJson(json, type)
-            codes.forEach { linkCodeCache.put(it.code, it) }
+            linkCodeCache.putAll(codes.associateBy { it.code })
         }
+        isDirty.set(false)
     }
 
     fun save() {
-        // Write the current cache as a list to disk.
-        val codes = linkCodeCache.asMap().values.toList()
+        if (!isDirty.get()) return
+        val codes = linkCodeCache.values.toList()
         file.writeText(gson.toJson(codes))
+        isDirty.set(false)
     }
 }
 
-/**
- * ClientStorage now uses a simple Caffeine cache.
- */
-class ClientStorage(private val dataFolder: File) {
-
+class ClientStorage(private val dataFolder: File, private val gson: Gson) {
     private val file = File(dataFolder, "clients.json")
-    private val gson = Gson()
+    private val clientCache = Caffeine.newBuilder().build<String, Client>().asMap()
+    private var isDirty = AtomicBoolean(false)
 
-    private val clientCache = Caffeine.newBuilder()
-        .build<String, Client>()
-
-    fun find(clientUuid: String): Client? {
-        return clientCache.getIfPresent(clientUuid)
-    }
+    fun find(clientUuid: String): Client? = clientCache[clientUuid]
 
     fun add(client: Client) {
-        clientCache.put(client.clientUuid, client)
-        save()
+        clientCache[client.clientUuid] = client
+        isDirty.set(true)
     }
 
     fun load() {
         if (!file.exists()) {
-            file.parentFile.mkdirs()
             file.writeText("[]")
             return
         }
@@ -311,47 +307,45 @@ class ClientStorage(private val dataFolder: File) {
         if (json.isNotBlank()) {
             val type = object : TypeToken<List<Client>>() {}.type
             val clients: List<Client> = gson.fromJson(json, type)
-            clients.forEach { clientCache.put(it.clientUuid, it) }
+            clientCache.putAll(clients.associateBy { it.clientUuid })
         }
+        isDirty.set(false)
     }
 
     fun save() {
-        val clients = clientCache.asMap().values.toList()
+        if (!isDirty.get()) return
+        val clients = clientCache.values.toList()
         file.writeText(gson.toJson(clients))
+        isDirty.set(false)
     }
 }
 
 class ClientConnection(
     private val socket: java.net.Socket,
-    private val plugin: MineChatServerPlugin
-) : Thread() {
+    private val plugin: MineChatServerPlugin,
+    private val gson: Gson,
+    private val miniMessage: MiniMessage
+) : Runnable {
     object ChatGradients {
-        val JOIN = Pair("#2ECC71", "#27AE60")
-        val LEAVE = Pair("#E74C3C", "#C0392B")
-        val AUTH = Pair("#9B59B6", "#8E44AD")
-        val INFO = Pair("#3498DB", "#2980B9")
+        val JOIN = Pair("#27AE60", "#2ECC71")
+        val LEAVE = Pair("#C0392B", "#E74C3C")
+        val AUTH = Pair("#8E44AD", "#9B59B6")
+        val INFO = Pair("#2980B9", "#3498DB")
     }
 
     companion object {
-        // The raw legacy string prefix is stored as a constant and we pre-convert it into a Component.
         const val MINECHAT_PREFIX_STRING = "&8[&3MineChat&8]"
         val MINECHAT_PREFIX_COMPONENT: Component = LegacyComponentSerializer.legacyAmpersand().deserialize(MINECHAT_PREFIX_STRING)
     }
 
     private val reader = socket.getInputStream().bufferedReader()
     private val writer = socket.getOutputStream().bufferedWriter()
-    private val mm = MiniMessage.miniMessage()
-    private val gson = Gson()
     private var client: Client? = null
     private var running = true
 
-    /*
-     * Broadcasts a message to all connected clients, prefixed with the MineChat prefix and colored 
-     * with an optional gradient.
-     */
     private fun broadcastMinecraft(colors: Pair<String, String>?, message: String) {
-	val formattedMessage = if (colors == null) message else "<gradient:${colors.first}:${colors.second}>$message</gradient>"
-	val finalMessage = mm.deserialize(formattedMessage)
+        val formattedMessage = colors?.let { "<gradient:${it.first}:${it.second}>$message</gradient>" } ?: message
+        val finalMessage = miniMessage.deserialize(formattedMessage)
         Bukkit.broadcast(formatPrefixed(finalMessage))
     }
 
@@ -488,16 +482,14 @@ class ClientConnection(
     private fun handleChat(payload: JsonObject) {
         client?.let {
             val message = payload.get("message").asString
-
-	    val usernamePlaceholder = Component.text(it.minecraftUsername, NamedTextColor.DARK_GREEN)
-	    val messagePladeholder = Component.text(message)
-	    val formattedMsg = mm.deserialize(
-		    "<gray><sender><dark_gray>:</dark_gray> <message></gray>",
-		    Placeholder.component("sender", usernamePlaceholder),
-		    Placeholder.component("message", messagePladeholder)
-	    )
-
-	    val finalMsg = formatPrefixed(formattedMsg)
+            val usernamePlaceholder = Component.text(it.minecraftUsername, NamedTextColor.DARK_GREEN)
+            val messagePladeholder = Component.text(message)
+            val formattedMsg = miniMessage.deserialize(
+                "<gray><sender><dark_gray>:</dark_gray> <message></gray>",
+                Placeholder.component("sender", usernamePlaceholder),
+                Placeholder.component("message", messagePladeholder)
+            )
+            val finalMsg = formatPrefixed(formattedMsg)
             Bukkit.broadcast(finalMsg)
             plugin.broadcastToClients(
                 gson.toJson(
@@ -528,9 +520,6 @@ class ClientConnection(
         socket.close()
     }
 
-    /**
-     * Helper to prepend the MineChat prefix to a message.
-     */
     fun formatPrefixed(message: Component): Component {
         return MINECHAT_PREFIX_COMPONENT
             .append(Component.space())
