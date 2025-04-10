@@ -6,23 +6,23 @@ import com.google.gson.reflect.TypeToken
 import com.mojang.brigadier.Command
 
 import org.bukkit.Bukkit
+import org.bukkit.entity.Player
 import org.bukkit.event.EventHandler
 import org.bukkit.event.Listener
-import org.bukkit.entity.Player
 import org.bukkit.plugin.java.JavaPlugin
 
-import io.papermc.paper.event.player.AsyncChatEvent
+import io.papermc.paper.command.brigadier.BasicCommand
 import io.papermc.paper.command.brigadier.CommandSourceStack
 import io.papermc.paper.command.brigadier.Commands
-import io.papermc.paper.command.brigadier.BasicCommand
+import io.papermc.paper.event.player.AsyncChatEvent
 import io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents
 
 import net.kyori.adventure.text.Component
-import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer
 import net.kyori.adventure.text.format.NamedTextColor
+import net.kyori.adventure.text.minimessage.MiniMessage
 import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer
-import net.kyori.adventure.text.minimessage.MiniMessage
+import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer
 
 import java.io.File
 import java.net.ServerSocket
@@ -186,7 +186,6 @@ class MineChatServerPlugin : JavaPlugin() {
         }
     }
 
-    // Instead of sending a raw string, we now accept a Component.
     fun broadcastMinecraft(component: Component) {
         Bukkit.getOnlinePlayers().forEach { it.sendMessage(component) }
     }
