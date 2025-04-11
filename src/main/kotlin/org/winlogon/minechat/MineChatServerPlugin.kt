@@ -87,7 +87,7 @@ class MineChatServerPlugin : JavaPlugin() {
             }
             .build()
 
-        val reloadCommand = Commands.literal("minechatreload")
+        val reloadCommand = Commands.literal("mchatreload")
             .requires { sender -> sender.getSender().hasPermission("minechat.reload") }
             .executes { ctx ->
                 val sender = ctx.source.sender
@@ -103,8 +103,8 @@ class MineChatServerPlugin : JavaPlugin() {
 
         this.getLifecycleManager().registerEventHandler(LifecycleEvents.COMMANDS) { event ->
             val registrar = event.registrar()
-            registrar.register(linkCommand)
-            registrar.register(reloadCommand)
+            registrar.register(linkCommand, "Link your Minecraft account to the server")
+            registrar.register(reloadCommand, "Reload MineChat's configuration")
         }
     }
 
