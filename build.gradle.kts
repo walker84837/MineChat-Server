@@ -8,27 +8,37 @@ plugins {
 
 group = "org.winlogon.minechat"
 
-fun getTime(): String {
-    val sdf = SimpleDateFormat("yyMMdd-HHmm")
-    sdf.timeZone = TimeZone.getTimeZone("UTC")
-    return sdf.format(Date()).toString()
+fun getLatestGitTag(): String? {
+    return try {
+        val process = ProcessBuilder("git", "describe", "--tags", "--abbrev=0")
+            .redirectOutput(ProcessBuilder.Redirect.PIPE)
+            .redirectError(ProcessBuilder.Redirect.PIPE)
+            .start()
+        process.waitFor()
+        if (process.exitValue() == 0) {
+            process.inputStream.bufferedReader().readText().trim()
+        } else {
+            null
+        }
+    } catch (e: Exception) {
+        null
+    }
 }
 
 val shortVersion: String? = if (project.hasProperty("ver")) {
-    val ver = project.property("ver").toString()
-    if (ver.startsWith("v")) {
-        ver.substring(1).uppercase()
-    } else {
-        ver.uppercase()
-    }
+    project.property("ver").toString()
 } else {
-    null
+    getLatestGitTag()
 }
 
 val version: String = when {
-    shortVersion.isNullOrEmpty() -> "${getTime()}-SNAPSHOT"
+    shortVersion.isNullOrEmpty() -> "0.0.0-SNAPSHOT"
     shortVersion.contains("-RC-") -> shortVersion.substringBefore("-RC-") + "-SNAPSHOT"
-    else -> shortVersion
+    else -> if (shortVersion.startsWith("v")) {
+        shortVersion.substring(1).uppercase()
+    } else {
+        shortVersion.uppercase()
+    }
 }
 
 val pluginName = rootProject.name
@@ -53,16 +63,19 @@ repositories {
             includeModule("com.mojang", "brigadier")
         }
     }
+
     maven {
-        url = uri("https://repo.codemc.org/repository/maven-public/")
+        url = uri("https://libraries.minecraft.net")
     }
+
     mavenCentral()
 }
 
 dependencies {
     compileOnly("io.papermc.paper:paper-api:1.21.4-R0.1-SNAPSHOT")
     compileOnly("net.kyori:adventure-text-serializer-plain:4.19.0")
-    compileOnly("dev.jorel:commandapi-bukkit-core:9.7.0")
+    compileOnly("com.mojang:brigadier:1.1.8")
+    compileOnly("com.github.ben-manes.caffeine:caffeine:3.2.0")
     
     testRuntimeOnly("org.junit.platform:junit-platform-launcher:1.11.4")
     testImplementation("io.papermc.paper:paper-api:1.21.4-R0.1-SNAPSHOT")

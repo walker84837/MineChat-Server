@@ -1,3 +1,9 @@
 # MineChat - Chat to players on Minecraft, using external apps!
 
+# The port to listen on.
+# Default: 25575
 port: 25575
+
+# The time in minutes before a link code expires.
+# Default: 5
+expiry-code-minutes: 5
