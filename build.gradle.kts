@@ -26,12 +26,7 @@ fun getLatestGitTag(): String? {
 }
 
 val shortVersion: String? = if (project.hasProperty("ver")) {
-    val ver = project.property("ver").toString()
-    if (ver.startsWith("v")) {
-        ver.substring(1).uppercase()
-    } else {
-        ver.uppercase()
-    }
+    project.property("ver").toString()
 } else {
     getLatestGitTag()
 }
@@ -39,7 +34,11 @@ val shortVersion: String? = if (project.hasProperty("ver")) {
 val version: String = when {
     shortVersion.isNullOrEmpty() -> "0.0.0-SNAPSHOT"
     shortVersion.contains("-RC-") -> shortVersion.substringBefore("-RC-") + "-SNAPSHOT"
-    else -> shortVersion
+    else -> if (shortVersion.startsWith("v")) {
+        shortVersion.substring(1).uppercase()
+    } else {
+        shortVersion.uppercase()
+    }
 }
 
 val pluginName = rootProject.name
