@@ -39,7 +39,7 @@ data class Config(
 
 class MineChatServerPlugin : JavaPlugin() {
     private var serverSocket: ServerSocket? = null
-    private val connectedClients = CopyOnWriteArrayList<ClientConnection>()
+    private val connectedClients = ConcurrentLinkedQueue<ClientConnection>()
     private lateinit var linkCodeStorage: LinkCodeStorage
     private lateinit var clientStorage: ClientStorage
     private var isFolia = false
@@ -48,7 +48,7 @@ class MineChatServerPlugin : JavaPlugin() {
     private var expiryCodeMs = 300_000 // 5 minutes
     private var serverThread: Thread? = null
     @Volatile private var isServerRunning = false
-    private val executorService = Executors.newCachedThreadPool()
+    private val executorService = Executors.newVirtualThreadPerTaskExecutor()
     val gson = Gson()
     val miniMessage = MiniMessage.miniMessage()
 
